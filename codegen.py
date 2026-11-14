@@ -5,13 +5,18 @@ from ir import (
     Context,
     ProgramIR,
     FunctionIR,
+    Move,
     Param,
     Return,
 )
 from ast_nodes import (
     TypeName,
     Block,
+    VarDecl,
+    Assignment,
+    ReturnStmt,
 )
+from patterns import REG
 
 
 class CodeGenerator:
@@ -53,6 +58,27 @@ class CodeGenerator:
         if isinstance(node, Block):
             for comando in node.statements: #percorre os comandos na ordem
                 self.statement(comando)
+
+        #caso 2 declaracao: int x = 10;
+        elif isinstance(node, VarDecl):
+            if node.initializer is not None: #sem inicializador n emite nada
+                valor = self.expression(node.initializer, REG) #avalia primeiro
+                variavel = self.contexto.variable(node.metadata["symbol"]) #vreg da variavel
+                self.contexto.emit(Move(variavel, valor, origin=node.span)) #dps escreve na variavel
+
+        #caso 3 atribuicao: x = x + 1;
+        elif isinstance(node, Assignment):
+            valor = self.expression(node.value, REG) #avalia o lado direito antes de escrever
+            variavel = self.contexto.variable(node.target.metadata["symbol"]) #vreg do alvo
+            self.contexto.emit(Move(variavel, valor, origin=node.span))
+
+        #caso 7 return; ou return x;
+        elif isinstance(node, ReturnStmt):
+            if node.value is None: #return sem valor, funcao void
+                self.contexto.emit(Return(None, origin=node.span))
+            else:
+                valor = self.expression(node.value, REG)
+                self.contexto.emit(Return(valor, origin=node.span))
 
         else: #se n for nenhum dos acima, da erro
             raise ValueError(f"comando desconhecido em {node.span}")
