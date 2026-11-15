@@ -3,10 +3,6 @@
 import load_previous
 
 from catalogue import catalogue
-from ir import (
-    Add, Addi, Beq, Bge, Blt, Bne, Bnez, Context, Div, FunctionIR,
-    Jump, Li, Mul, Neg, ProgramIR, Rem, Seqz, Slli, Slt, Snez, Sub, Xor,
-)
 from patterns import signed_literal
 from selector import Selector
 from ir import (
@@ -25,6 +21,8 @@ from ir import (
     Call,
     Seqz,
     Li,
+    Add, Addi, Beq, Bge, Blt, Bne, Bnez,Div,
+    Jump, Li, Mul, Neg, Rem, Seqz, Slli, Slt, Snez, Sub, Xor,
 )
 from ast_nodes import (
     TypeName,
