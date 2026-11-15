@@ -8,6 +8,11 @@ from ir import (
     Move,
     Param,
     Return,
+    PrintInt,
+    PrintBool,
+    PrintString,
+    LabelInstr,
+    Jump,
 )
 from ast_nodes import (
     TypeName,
@@ -15,8 +20,12 @@ from ast_nodes import (
     VarDecl,
     Assignment,
     ReturnStmt,
+    PrintStmt,
+    StringLiteral,
+    IfStmt,
+    WhileStmt,
 )
-from patterns import REG
+from patterns import REG, COND
 
 
 class CodeGenerator:
@@ -72,6 +81,42 @@ class CodeGenerator:
             variavel = self.contexto.variable(node.target.metadata["symbol"]) #vreg do alvo
             self.contexto.emit(Move(variavel, valor, origin=node.span))
 
+        #caso 5 if (cond) { ... } else { ... }
+        elif isinstance(node, IfStmt):
+            rotulo_then = self.contexto.label()
+            rotulo_fim = self.contexto.label()
+            if node.else_block is not None: #se tiver else, a condicao falsa vai p ele
+                rotulo_else = self.contexto.label()
+            else: #se n tiver else, a condicao falsa vai direto pro fim
+                rotulo_else = rotulo_fim
+
+            self.expression(node.condition, COND, rotulo_then, rotulo_else) #condicao como desvio
+
+            self.contexto.emit(LabelInstr(rotulo_then))
+            self.statement(node.then_block)
+
+            if node.else_block is not None:
+                self.contexto.emit(Jump(rotulo_fim, origin=node.span)) #dps do then pula o else
+                self.contexto.emit(LabelInstr(rotulo_else))
+                self.statement(node.else_block)
+
+            self.contexto.emit(LabelInstr(rotulo_fim)) #continuacao do if
+
+        #caso 6 while (cond) { ... }
+        elif isinstance(node, WhileStmt):
+            rotulo_teste = self.contexto.label()
+            rotulo_corpo = self.contexto.label()
+            rotulo_saida = self.contexto.label()
+
+            self.contexto.emit(LabelInstr(rotulo_teste)) #volta aqui a cada repeticao
+            self.expression(node.condition, COND, rotulo_corpo, rotulo_saida) #c for falso sai do laco
+
+            self.contexto.emit(LabelInstr(rotulo_corpo))
+            self.statement(node.body)
+            self.contexto.emit(Jump(rotulo_teste, origin=node.span)) #salto de volta pro teste
+
+            self.contexto.emit(LabelInstr(rotulo_saida))
+
         #caso 7 return; ou return x;
         elif isinstance(node, ReturnStmt):
             if node.value is None: #return sem valor, funcao void
@@ -79,6 +124,22 @@ class CodeGenerator:
             else:
                 valor = self.expression(node.value, REG)
                 self.contexto.emit(Return(valor, origin=node.span))
+
+        #caso 8 print("a", x, true);
+        elif isinstance(node, PrintStmt):
+            for item in node.items: #cada item eh impresso por completo antes do proximo
+                if isinstance(item, StringLiteral): #string vai pro pool, n usa vreg
+                    texto = self.contexto.string(item.value)
+                    self.contexto.emit(PrintString(texto, origin=item.span))
+                else: #expressao, escolhe o print pelo tipo anotado
+                    valor = self.expression(item, REG)
+                    if item.metadata["type"] is TypeName.BOOL:
+                        self.contexto.emit(PrintBool(valor, origin=item.span))
+                    else:
+                        self.contexto.emit(PrintInt(valor, origin=item.span))
+
+            quebra = self.contexto.string("\n") #reutiliza a msm entrada "\n" do pool
+            self.contexto.emit(PrintString(quebra, origin=node.span)) #uma quebra no final de cada print
 
         else: #se n for nenhum dos acima, da erro
             raise ValueError(f"comando desconhecido em {node.span}")
