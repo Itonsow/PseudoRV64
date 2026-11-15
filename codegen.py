@@ -1,6 +1,14 @@
-"""Pontos de implementação da geração de comandos e expressões."""
+"""Geração de comandos e expressões em pseudoRV64."""
 
 import load_previous
+
+from catalogue import catalogue
+from ir import (
+    Add, Addi, Beq, Bge, Blt, Bne, Bnez, Context, Div, FunctionIR,
+    Jump, Li, Mul, Neg, ProgramIR, Rem, Seqz, Slli, Slt, Snez, Sub, Xor,
+)
+from patterns import signed_literal
+from selector import Selector
 from ir import (
     Context,
     ProgramIR,
@@ -61,8 +69,183 @@ class CodeGenerator:
         return programa_ir
 
     def expression(self, node, result_class, true_label=None, false_label=None):
-        """Selecione e reconstrua uma expressão, preservando curto-circuito."""
-        raise NotImplementedError("implemente seleção e emissão")
+        selector = Selector(catalogue())
+        table = selector.analyze(node)
+        return self._emit(node, result_class, table, true_label, false_label)
+
+    def _emit(self, node, result_class, table, true_label=None, false_label=None):
+        choice = table.lookup(node, result_class)
+        if choice is None:
+            raise ValueError(f"Sem regra para {result_class.name} em {node.span}")
+
+        action = getattr(self, choice.rule.action)
+        return action(node, table, choice.subproblems, true_label, false_label)
+
+    def _emitir_dois_filhos(self, table, subproblems):
+        (left_node, left_class), (right_node, right_class) = subproblems
+
+        left = self._emit(left_node, left_class, table)
+        right = self._emit(right_node, right_class, table)
+        return left, right
+
+    def _emitir_valor(self, node, instrucao, *operandos):
+        dst = self.context.temp()
+        self.context.emit(instrucao(dst, *operandos, origin=node.span))
+        return dst
+
+    def emitir_identificador(self, node, table, subproblems, true_label, false_label):
+        symbol = node.metadata["symbol"]
+        return self.context.variable(symbol)
+
+    def emitir_literal_inteiro(self, node, table, subproblems, true_label, false_label):
+        return self._emitir_valor(node, Li, node.value)
+
+    def emitir_literal_inteiro_negativo(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        return self._emitir_valor(node, Li, signed_literal(node))
+
+    def emitir_literal_booleano(self, node, table, subproblems, true_label, false_label):
+        return self._emitir_valor(node, Li, int(node.value))
+
+    def emitir_literal_imm12(self, node, table, subproblems, true_label, false_label):
+        return signed_literal(node)
+
+    def emitir_literal_pow2(self, node, table, subproblems, true_label, false_label):
+        value = signed_literal(node)
+        return value.bit_length() - 1
+
+    def emitir_negacao_aritmetica(self, node, table, subproblems, true_label, false_label):
+        (operand, operand_class), = subproblems
+        src = self._emit(operand, operand_class, table)
+        return self._emitir_valor(node, Neg, src)
+
+    def emitir_soma_imediato_direita(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        src, imm = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Addi, src, imm)
+
+    def emitir_soma_imediato_esquerda(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        imm, src = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Addi, src, imm)
+
+    def emitir_subtracao_imediato_direita(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        (left_node, left_class), = subproblems
+        src = self._emit(left_node, left_class, table)
+        imm = -signed_literal(node.right)
+        return self._emitir_valor(node, Addi, src, imm)
+
+    def emitir_multiplicacao_pow2_direita(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        src, shift = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Slli, src, shift)
+
+    def emitir_multiplicacao_pow2_esquerda(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        shift, src = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Slli, src, shift)
+
+    def emitir_soma_reg_reg(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Add, left, right)
+
+    def emitir_subtracao_reg_reg(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Sub, left, right)
+
+    def emitir_multiplicacao_reg_reg(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Mul, left, right)
+
+    def emitir_divisao_reg_reg(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Div, left, right)
+
+    def emitir_resto_reg_reg(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Rem, left, right)
+
+    def emitir_menor_reg_reg(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Slt, left, right)
+
+    def emitir_maior_reg_reg(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        return self._emitir_valor(node, Slt, right, left)
+
+    def emitir_menor_igual_reg_reg(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        comparacao = self._emitir_valor(node, Slt, right, left)
+        return self._emitir_valor(node, Seqz, comparacao)
+
+    def emitir_maior_igual_reg_reg(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        comparacao = self._emitir_valor(node, Slt, left, right)
+        return self._emitir_valor(node, Seqz, comparacao)
+
+    def emitir_igual_reg_reg(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        diferenca = self._emitir_valor(node, Xor, left, right)
+        return self._emitir_valor(node, Seqz, diferenca)
+
+    def emitir_diferente_reg_reg(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        diferenca = self._emitir_valor(node, Xor, left, right)
+        return self._emitir_valor(node, Snez, diferenca)
+
+    def _emitir_desvio(self, node, instrucao, true_label, false_label, *operandos):
+        self.context.emit(instrucao(*operandos, true_label, origin=node.span))
+        self.context.emit(Jump(false_label, origin=node.span))
+
+    def emitir_menor_cond(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        self._emitir_desvio(node, Blt, true_label, false_label, left, right)
+
+    def emitir_maior_cond(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        self._emitir_desvio(node, Blt, true_label, false_label, right, left)
+
+    def emitir_menor_igual_cond(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        self._emitir_desvio(node, Bge, true_label, false_label, right, left)
+
+    def emitir_maior_igual_cond(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        self._emitir_desvio(node, Bge, true_label, false_label, left, right)
+
+    def emitir_igual_cond(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        self._emitir_desvio(node, Beq, true_label, false_label, left, right)
+
+    def emitir_diferente_cond(self, node, table, subproblems, true_label, false_label):
+        left, right = self._emitir_dois_filhos(table, subproblems)
+        self._emitir_desvio(node, Bne, true_label, false_label, left, right)
+
+    def emitir_literal_booleano_cond(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        destino = true_label if node.value else false_label
+        self.context.emit(Jump(destino, origin=node.span))
+
+    def emitir_identificador_booleano_cond(
+        self, node, table, subproblems, true_label, false_label
+    ):
+        symbol = node.metadata["symbol"]
+        src = self.context.variable(symbol)
+        self._emitir_desvio(node, Bnez, true_label, false_label, src)
 
     def statement(self, node): #olha o tipo do comando e decide oq emitir
         """Traduza um comando ad hoc."""
