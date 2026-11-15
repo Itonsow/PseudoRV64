@@ -13,6 +13,10 @@ from ir import (
     PrintString,
     LabelInstr,
     Jump,
+    Bnez,
+    Call,
+    Seqz,
+    Li,
 )
 from ast_nodes import (
     TypeName,
@@ -24,8 +28,9 @@ from ast_nodes import (
     StringLiteral,
     IfStmt,
     WhileStmt,
+    CallStmt,
 )
-from patterns import REG, COND
+from patterns import REG, COND, EFFECT
 
 
 class CodeGenerator:
@@ -80,6 +85,10 @@ class CodeGenerator:
             valor = self.expression(node.value, REG) #avalia o lado direito antes de escrever
             variavel = self.contexto.variable(node.target.metadata["symbol"]) #vreg do alvo
             self.contexto.emit(Move(variavel, valor, origin=node.span))
+
+        #caso 4 chamada como comando: registrar(1, 2);
+        elif isinstance(node, CallStmt):
+            self.expression(node.call, EFFECT) #o resultado eh descartado
 
         #caso 5 if (cond) { ... } else { ... }
         elif isinstance(node, IfStmt):
@@ -143,3 +152,76 @@ class CodeGenerator:
 
         else: #se n for nenhum dos acima, da erro
             raise ValueError(f"comando desconhecido em {node.span}")
+
+    # acoes de chamadas
+    # todas recebem o no, a escolha do seletor e os destinos (os destinos so sao usados em COND)
+
+    def avaliar_argumentos(self, no): #avalia os argumentos da esquerda p direita
+        argumentos = []
+        for argumento in no.arguments: #ja vem na ordem em q aparecem na chamada
+            argumentos.append(self.expression(argumento, REG)) #cada argumento vira um vreg
+        return argumentos
+
+    def emitir_chamada_reg(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #chamada q devolve valor
+        argumentos = self.avaliar_argumentos(no)
+        destino = self.contexto.temp() #vreg q recebe o retorno
+        self.contexto.emit(Call(destino, no.metadata["symbol"], argumentos, origin=no.span))
+        return destino
+
+    def emitir_chamada_effect(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #chamada com resultado descartado
+        argumentos = self.avaliar_argumentos(no)
+        self.contexto.emit(Call(None, no.metadata["symbol"], argumentos, origin=no.span)) #dst None, n guarda nada
+
+    def emitir_chamada_cond(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #chamada bool usada como condicao
+        argumentos = self.avaliar_argumentos(no)
+        destino = self.contexto.temp()
+        self.contexto.emit(Call(destino, no.metadata["symbol"], argumentos, origin=no.span))
+        self.contexto.emit(Bnez(destino, rotulo_verdadeiro, origin=no.span)) #c deu true vai pro verdadeiro
+        self.contexto.emit(Jump(rotulo_falso, origin=no.span)) #senao vai pro falso
+
+    # acoes de ! && ||
+
+    def emitir_negacao_logica_reg(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #!x como valor 0/1
+        valor = self.expression(no.operand, REG)
+        destino = self.contexto.temp()
+        self.contexto.emit(Seqz(destino, valor, origin=no.span)) #1 c era 0, 0 c era 1
+        return destino
+
+    def emitir_negacao_logica_cond(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #!x como desvio
+        self.expression(no.operand, COND, rotulo_falso, rotulo_verdadeiro) #so troca os destinos, n emite nada
+
+    def emitir_e_logico_cond(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #a && b como desvio
+        rotulo_meio = self.contexto.label()
+        self.expression(no.left, COND, rotulo_meio, rotulo_falso) #c a for falso n avalia b
+        self.contexto.emit(LabelInstr(rotulo_meio)) #so chega aqui c a foi verdadeiro
+        self.expression(no.right, COND, rotulo_verdadeiro, rotulo_falso)
+
+    def emitir_ou_logico_cond(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #a || b como desvio
+        rotulo_meio = self.contexto.label()
+        self.expression(no.left, COND, rotulo_verdadeiro, rotulo_meio) #c a for verdadeiro n avalia b
+        self.contexto.emit(LabelInstr(rotulo_meio)) #so chega aqui c a foi falso
+        self.expression(no.right, COND, rotulo_verdadeiro, rotulo_falso)
+
+    def escrever_0_ou_1(self, no, rotulo_verdadeiro, rotulo_falso): #dps dos desvios, escreve 1 ou 0 num vreg
+        destino = self.contexto.temp()
+        rotulo_fim = self.contexto.label()
+
+        self.contexto.emit(LabelInstr(rotulo_verdadeiro))
+        self.contexto.emit(Li(destino, 1, origin=no.span)) #caminho verdadeiro escreve 1
+        self.contexto.emit(Jump(rotulo_fim, origin=no.span)) #pula o caminho falso
+        self.contexto.emit(LabelInstr(rotulo_falso))
+        self.contexto.emit(Li(destino, 0, origin=no.span)) #caminho falso escreve 0
+        self.contexto.emit(LabelInstr(rotulo_fim)) #os dois caminhos se juntam aqui
+        return destino
+
+    def emitir_e_logico_reg(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #a && b como valor
+        verdadeiro = self.contexto.label()
+        falso = self.contexto.label()
+        self.emitir_e_logico_cond(no, escolha, verdadeiro, falso) #monta os desvios do &&
+        return self.escrever_0_ou_1(no, verdadeiro, falso)
+
+    def emitir_ou_logico_reg(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #a || b como valor
+        verdadeiro = self.contexto.label()
+        falso = self.contexto.label()
+        self.emitir_ou_logico_cond(no, escolha, verdadeiro, falso) #monta os desvios do ||
+        return self.escrever_0_ou_1(no, verdadeiro, falso)
