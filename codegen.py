@@ -87,13 +87,13 @@ class CodeGenerator:
         return left, right
 
     def _emitir_valor(self, node, instrucao, *operandos):
-        dst = self.context.temp()
-        self.context.emit(instrucao(dst, *operandos, origin=node.span))
+        dst = self.contexto.temp()
+        self.contexto.emit(instrucao(dst, *operandos, origin=node.span))
         return dst
 
     def emitir_identificador(self, node, table, subproblems, true_label, false_label):
         symbol = node.metadata["symbol"]
-        return self.context.variable(symbol)
+        return self.contexto.variable(symbol)
 
     def emitir_literal_inteiro(self, node, table, subproblems, true_label, false_label):
         return self._emitir_valor(node, Li, node.value)
@@ -205,8 +205,8 @@ class CodeGenerator:
         return self._emitir_valor(node, Snez, diferenca)
 
     def _emitir_desvio(self, node, instrucao, true_label, false_label, *operandos):
-        self.context.emit(instrucao(*operandos, true_label, origin=node.span))
-        self.context.emit(Jump(false_label, origin=node.span))
+        self.contexto.emit(instrucao(*operandos, true_label, origin=node.span))
+        self.contexto.emit(Jump(false_label, origin=node.span))
 
     def emitir_menor_cond(self, node, table, subproblems, true_label, false_label):
         left, right = self._emitir_dois_filhos(table, subproblems)
@@ -236,13 +236,13 @@ class CodeGenerator:
         self, node, table, subproblems, true_label, false_label
     ):
         destino = true_label if node.value else false_label
-        self.context.emit(Jump(destino, origin=node.span))
+        self.contexto.emit(Jump(destino, origin=node.span))
 
     def emitir_identificador_booleano_cond(
         self, node, table, subproblems, true_label, false_label
     ):
         symbol = node.metadata["symbol"]
-        src = self.context.variable(symbol)
+        src = self.contexto.variable(symbol)
         self._emitir_desvio(node, Bnez, true_label, false_label, src)
 
     def statement(self, node): #olha o tipo do comando e decide oq emitir
@@ -335,7 +335,7 @@ class CodeGenerator:
             raise ValueError(f"comando desconhecido em {node.span}")
 
     # acoes de chamadas
-    # todas recebem o no, a escolha do seletor e os destinos (os destinos so sao usados em COND)
+    # todas recebem o no, a tabela do seletor, os subproblemas e os destinos (os destinos so sao usados em COND)
 
     def avaliar_argumentos(self, no): #avalia os argumentos da esquerda p direita
         argumentos = []
@@ -343,17 +343,17 @@ class CodeGenerator:
             argumentos.append(self.expression(argumento, REG)) #cada argumento vira um vreg
         return argumentos
 
-    def emitir_chamada_reg(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #chamada q devolve valor
+    def emitir_chamada_reg(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #chamada q devolve valor
         argumentos = self.avaliar_argumentos(no)
         destino = self.contexto.temp() #vreg q recebe o retorno
         self.contexto.emit(Call(destino, no.metadata["symbol"], argumentos, origin=no.span))
         return destino
 
-    def emitir_chamada_effect(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #chamada com resultado descartado
+    def emitir_chamada_effect(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #chamada com resultado descartado
         argumentos = self.avaliar_argumentos(no)
         self.contexto.emit(Call(None, no.metadata["symbol"], argumentos, origin=no.span)) #dst None, n guarda nada
 
-    def emitir_chamada_cond(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #chamada bool usada como condicao
+    def emitir_chamada_cond(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #chamada bool usada como condicao
         argumentos = self.avaliar_argumentos(no)
         destino = self.contexto.temp()
         self.contexto.emit(Call(destino, no.metadata["symbol"], argumentos, origin=no.span))
@@ -362,22 +362,22 @@ class CodeGenerator:
 
     # acoes de ! && ||
 
-    def emitir_negacao_logica_reg(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #!x como valor 0/1
+    def emitir_negacao_logica_reg(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #!x como valor 0/1
         valor = self.expression(no.operand, REG)
         destino = self.contexto.temp()
         self.contexto.emit(Seqz(destino, valor, origin=no.span)) #1 c era 0, 0 c era 1
         return destino
 
-    def emitir_negacao_logica_cond(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #!x como desvio
+    def emitir_negacao_logica_cond(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #!x como desvio
         self.expression(no.operand, COND, rotulo_falso, rotulo_verdadeiro) #so troca os destinos, n emite nada
 
-    def emitir_e_logico_cond(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #a && b como desvio
+    def emitir_e_logico_cond(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #a && b como desvio
         rotulo_meio = self.contexto.label()
         self.expression(no.left, COND, rotulo_meio, rotulo_falso) #c a for falso n avalia b
         self.contexto.emit(LabelInstr(rotulo_meio)) #so chega aqui c a foi verdadeiro
         self.expression(no.right, COND, rotulo_verdadeiro, rotulo_falso)
 
-    def emitir_ou_logico_cond(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #a || b como desvio
+    def emitir_ou_logico_cond(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #a || b como desvio
         rotulo_meio = self.contexto.label()
         self.expression(no.left, COND, rotulo_verdadeiro, rotulo_meio) #c a for verdadeiro n avalia b
         self.contexto.emit(LabelInstr(rotulo_meio)) #so chega aqui c a foi falso
@@ -395,14 +395,14 @@ class CodeGenerator:
         self.contexto.emit(LabelInstr(rotulo_fim)) #os dois caminhos se juntam aqui
         return destino
 
-    def emitir_e_logico_reg(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #a && b como valor
+    def emitir_e_logico_reg(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #a && b como valor
         verdadeiro = self.contexto.label()
         falso = self.contexto.label()
-        self.emitir_e_logico_cond(no, escolha, verdadeiro, falso) #monta os desvios do &&
+        self.emitir_e_logico_cond(no, tabela, subproblemas, verdadeiro, falso) #monta os desvios do &&
         return self.escrever_0_ou_1(no, verdadeiro, falso)
 
-    def emitir_ou_logico_reg(self, no, escolha, rotulo_verdadeiro=None, rotulo_falso=None): #a || b como valor
+    def emitir_ou_logico_reg(self, no, tabela, subproblemas, rotulo_verdadeiro=None, rotulo_falso=None): #a || b como valor
         verdadeiro = self.contexto.label()
         falso = self.contexto.label()
-        self.emitir_ou_logico_cond(no, escolha, verdadeiro, falso) #monta os desvios do ||
+        self.emitir_ou_logico_cond(no, tabela, subproblemas, verdadeiro, falso) #monta os desvios do ||
         return self.escrever_0_ou_1(no, verdadeiro, falso)
